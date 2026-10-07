@@ -101,15 +101,15 @@ jobs:
           cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
           cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
           cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-Device: OnePlus Pad 2 Pro (OPD2413)
-Firmware target: OPD2413_16.0.9.400(CN01)
-Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-Expected kernel base: 6.6.118
-DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-Root: no KernelSU added; this artifact is a raw kernel Image only
-Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
-EOF
+          Device: OnePlus Pad 2 Pro (OPD2413)
+          Firmware target: OPD2413_16.0.9.400(CN01)
+          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
+          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
+          Expected kernel base: 6.6.118
+          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
+          Root: no KernelSU added; this artifact is a raw kernel Image only
+          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
+          EOF
           cd "$OUT"
           sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
 
