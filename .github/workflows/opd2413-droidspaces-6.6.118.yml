@@ -70,7 +70,10 @@ jobs:
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
           TOOLCHAIN="$GITHUB_WORKSPACE/kernel/kernel_platform/prebuilts/clang/host/linux-x86"
-          CLANG_BIN="$(find "$TOOLCHAIN" -maxdepth 2 -type f -name clang -path '*/bin/clang' | head -n1)"
+          echo "Compiler candidates under: $TOOLCHAIN"
+          find "$TOOLCHAIN" -maxdepth 4 -name clang -path '*/bin/clang' -print || true
+          CLANG_BIN="$(find "$TOOLCHAIN" -maxdepth 4 -name clang -path '*/bin/clang' | head -n1)"
+          test -n "$CLANG_BIN"
           test -x "$CLANG_BIN"
           export PATH="$(dirname "$CLANG_BIN"):$PATH"
           clang --version
