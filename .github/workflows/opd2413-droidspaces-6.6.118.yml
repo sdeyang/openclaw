@@ -77,17 +77,6 @@ jobs:
             fi
           }
 
-          set_y() {
-            key="$1"
-            if grep -q "^# ${key} is not set$" "$DEFCONFIG"; then
-              sed -i "s|^# ${key} is not set$|${key}=y|" "$DEFCONFIG"
-            elif grep -q "^${key}=" "$DEFCONFIG"; then
-              sed -i "s|^${key}=.*|${key}=y|" "$DEFCONFIG"
-            else
-              printf '%s=y\n' "$key" >> "$DEFCONFIG"
-            fi
-          }
-
           set_n() {
             key="$1"
             if grep -q "^${key}=" "$DEFCONFIG"; then
@@ -99,18 +88,17 @@ jobs:
 
           # Uploaded stock boot reports:
           # 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
-          # Keep vendor-module vermagic compatible with the running firmware.
+          # Match UTS_RELEASE/vermagic while keeping the existing init_boot/Magisk untouched.
           set_string CONFIG_LOCALVERSION "-android15-8-g2e6b9c3812c5-ab15114928-4k"
           set_n CONFIG_LOCALVERSION_AUTO
 
-          # Align non-DroidSpaces scheduler settings with the uploaded stock kernel config.
+          # Align non-DroidSpaces scheduler choices with the stock embedded config.
           set_n CONFIG_SLIM_SCHED
           set_n CONFIG_SCHED_CLASS_EXT
           set_n CONFIG_EXT_GROUP_SCHED
 
           # Direct make does not generate Kleaf's abi_symbollist.raw.
-          # Disable trimming so all stock-exported symbols remain available to vendor modules.
-          # This is safer than using an incomplete hand-made whitelist.
+          # Do not trim exports: this preserves a superset of symbols for stock vendor modules.
           set_n CONFIG_TRIM_UNUSED_KSYMS
 
           grep -E 'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_(SLIM_SCHED|SCHED_CLASS_EXT|EXT_GROUP_SCHED|TRIM_UNUSED_KSYMS)' "$DEFCONFIG" || true
@@ -122,15 +110,17 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
+
           TOOLCHAIN="$GITHUB_WORKSPACE/kernel/kernel_platform/prebuilts/clang/host/linux-x86"
           CLANG_BIN="$(find "$TOOLCHAIN" -maxdepth 4 -name clang -path '*/bin/clang' | head -n1)"
           test -n "$CLANG_BIN"
           test -x "$CLANG_BIN"
           export PATH="$(dirname "$CLANG_BIN"):$PATH"
           clang --version
-          ccache -M 4G || true
 
+          ccache -M 4G || true
           rm -rf out
+
           make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= \
             CC="ccache clang" HOSTCC="ccache clang" gki_defconfig
 
@@ -159,10 +149,9 @@ jobs:
 
           grep -q '^CONFIG_LOCALVERSION="-android15-8-g2e6b9c3812c5-ab15114928-4k"$' "$CONFIG"
           grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' "$CONFIG"
-          grep -q '^# CONFIG_SLIM_SCHED is not set$' "$CONFIG" || true
-          grep -q '^# CONFIG_SCHED_CLASS_EXT is not set$' "$CONFIG" || true
-          grep -q '^# CONFIG_EXT_GROUP_SCHED is not set$' "$CONFIG" || true
-          grep -q '^# CONFIG_TRIM_UNUSED_KSYMS is not set
+          grep -q '^# CONFIG_TRIM_UNUSED_KSYMS is not set$' "$CONFIG"
+
+          grep -E '^CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|NET_NS|SYSVIPC|POSIX_MQUEUE|DEVTMPFS)=y$' "$CONFIG"
 
       - name: Prepare artifacts
         run: |
@@ -179,77 +168,9 @@ jobs:
           Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
           Kernel base: 6.6.118
           UTS_RELEASE target: 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
-          DroidSpaces: required namespace/SYSVIPC/devtmpfs support with kABI-safe integration
-          KMI symbols: trimming disabled in this direct-make build so vendor-visible exports are not accidentally removed
-          Root solution: none added; intended to preserve the existing Magisk init_boot
-          Safety: raw kernel Image only; do not flash directly to a partition
-          EOF
-
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces-v3 kernel-config > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces-v3
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-
-          grep -E '^CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|NET_NS|SYSVIPC|POSIX_MQUEUE|DEVTMPFS)=y
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces-v3"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Kernel base: 6.6.118
-          UTS_RELEASE target: 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
-          DroidSpaces: required namespace/SYSVIPC/devtmpfs support with kABI-safe integration
-          Root solution: none added; intended to preserve the existing Magisk init_boot
-          Safety: raw kernel Image only; do not flash directly to a partition
-          EOF
-
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces-v3 kernel-config > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces-v3
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces-v3"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Kernel base: 6.6.118
-          UTS_RELEASE target: 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
-          DroidSpaces: required namespace/SYSVIPC/devtmpfs support with kABI-safe integration
-          Root solution: none added; intended to preserve the existing Magisk init_boot
+          DroidSpaces: PID/IPC namespaces, SYSVIPC/POSIX mqueue and devtmpfs with kABI-safe integration
+          KMI symbols: export trimming disabled in this direct-make build to avoid dropping stock vendor-visible symbols
+          Root solution: none added; existing Magisk init_boot is not modified
           Safety: raw kernel Image only; do not flash directly to a partition
           EOF
 
