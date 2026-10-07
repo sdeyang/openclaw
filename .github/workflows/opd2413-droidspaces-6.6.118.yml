@@ -1,0 +1,187 @@
+name: Build OPD2413 DroidSpaces 6.6.118
+
+on:
+  push:
+    branches:
+      - kernel-opd2413-ds-6.6.118
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout control repo
+        uses: actions/checkout@v4
+
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git libelf-dev libssl-dev \
+            python3 rsync unzip zip dwarves ca-certificates xz-utils
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /tmp/repo
+          chmod +x /tmp/repo
+          sudo mv /tmp/repo /usr/local/bin/repo
+
+      - name: Sync OnePlus Pad 2 Pro Android 16 source
+        run: |
+          set -euxo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/kernel"
+          cd "$GITHUB_WORKSPACE/kernel"
+          repo init --depth=1 \
+            -u https://github.com/OnePlusOSS/kernel_manifest.git \
+            -b oneplus/sm8750 \
+            -m oneplus_pad_2_pro_b.xml
+          repo sync -c --no-tags --no-clone-bundle -j"$(nproc)"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) = ' kernel_platform/common/Makefile
+          test "$(awk '/^VERSION =/{print $3}' kernel_platform/common/Makefile)" = "6"
+          test "$(awk '/^PATCHLEVEL =/{print $3}' kernel_platform/common/Makefile)" = "6"
+          test "$(awk '/^SUBLEVEL =/{print $3}' kernel_platform/common/Makefile)" = "118"
+
+      - name: Apply DroidSpaces GKI integration
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 https://github.com/xingguangcuican6666/DroidSpaces-OSS-module.git "$GITHUB_WORKSPACE/ds-module"
+          export KERNEL_ROOT="$GITHUB_WORKSPACE/kernel/kernel_platform"
+          export DEFCONFIG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
+          bash "$GITHUB_WORKSPACE/ds-module/setup.sh"
+          grep -E 'CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NETFILTER_XT_MATCH_ADDRTYPE)=' "$DEFCONFIG"
+
+      - name: Match stock OPD2413 ABI identity
+        run: |
+          set -euxo pipefail
+          DEFCONFIG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+
+          set_string() {
+            key="$1"
+            value="$2"
+            if grep -q "^${key}=" "$DEFCONFIG"; then
+              sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$DEFCONFIG"
+            else
+              printf '%s="%s"\n' "$key" "$value" >> "$DEFCONFIG"
+            fi
+          }
+
+          set_n() {
+            key="$1"
+            if grep -q "^${key}=" "$DEFCONFIG"; then
+              sed -i "s|^${key}=.*|# ${key} is not set|" "$DEFCONFIG"
+            elif ! grep -q "^# ${key} is not set$" "$DEFCONFIG"; then
+              printf '# %s is not set\n' "$key" >> "$DEFCONFIG"
+            fi
+          }
+
+          # Uploaded stock boot reports:
+          # 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
+          # Match UTS_RELEASE/vermagic while keeping the existing init_boot/Magisk untouched.
+          set_string CONFIG_LOCALVERSION "-android15-8-g2e6b9c3812c5-ab15114928-4k"
+          set_n CONFIG_LOCALVERSION_AUTO
+
+          # Align non-DroidSpaces scheduler choices with the stock embedded config.
+          set_n CONFIG_SLIM_SCHED
+          set_n CONFIG_SCHED_CLASS_EXT
+          set_n CONFIG_EXT_GROUP_SCHED
+
+          # Direct make does not generate Kleaf's abi_symbollist.raw.
+          # Do not trim exports: this preserves a superset of symbols for stock vendor modules.
+          set_n CONFIG_TRIM_UNUSED_KSYMS
+
+          grep -E 'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_(SLIM_SCHED|SCHED_CLASS_EXT|EXT_GROUP_SCHED|TRIM_UNUSED_KSYMS)' "$DEFCONFIG" || true
+
+      - name: Build kernel Image
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_MAXSIZE: 4G
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
+
+          TOOLCHAIN="$GITHUB_WORKSPACE/kernel/kernel_platform/prebuilts/clang/host/linux-x86"
+          CLANG_BIN="$(find "$TOOLCHAIN" -maxdepth 4 -name clang -path '*/bin/clang' | head -n1)"
+          test -n "$CLANG_BIN"
+          test -x "$CLANG_BIN"
+          export PATH="$(dirname "$CLANG_BIN"):$PATH"
+          clang --version
+
+          ccache -M 4G || true
+          rm -rf out
+
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= \
+            CC="ccache clang" HOSTCC="ccache clang" gki_defconfig
+
+          KREL="$(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= kernelrelease)"
+          echo "kernelrelease=$KREL"
+          test "$KREL" = "6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k"
+
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= \
+            CC="ccache clang" HOSTCC="ccache clang" Image
+
+          test -s out/arch/arm64/boot/Image
+          strings out/arch/arm64/boot/Image | grep -m1 '^Linux version 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k '
+          file out/arch/arm64/boot/Image
+          sha256sum out/arch/arm64/boot/Image
+
+      - name: Verify final configuration
+        run: |
+          set -euxo pipefail
+          CONFIG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config"
+
+          for opt in \
+            CONFIG_NAMESPACES CONFIG_PID_NS CONFIG_IPC_NS CONFIG_UTS_NS \
+            CONFIG_NET_NS CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_DEVTMPFS; do
+            grep -q "^${opt}=y$" "$CONFIG" || { echo "MISSING: ${opt}=y"; exit 1; }
+          done
+
+          grep -q '^CONFIG_LOCALVERSION="-android15-8-g2e6b9c3812c5-ab15114928-4k"$' "$CONFIG"
+          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' "$CONFIG"
+          grep -q '^# CONFIG_TRIM_UNUSED_KSYMS is not set$' "$CONFIG"
+
+          grep -E '^CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|NET_NS|SYSVIPC|POSIX_MQUEUE|DEVTMPFS)=y$' "$CONFIG"
+
+      - name: Prepare artifacts
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$OUT"
+          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces-v3"
+          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
+
+          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
+          Device: OnePlus Pad 2 Pro (OPD2413)
+          Firmware target: OPD2413_16.0.9.400(CN01)
+          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
+          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
+          Kernel base: 6.6.118
+          UTS_RELEASE target: 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
+          DroidSpaces: PID/IPC namespaces, SYSVIPC/POSIX mqueue and devtmpfs with kABI-safe integration
+          KMI symbols: export trimming disabled in this direct-make build to avoid dropping stock vendor-visible symbols
+          Root solution: none added; existing Magisk init_boot is not modified
+          Safety: raw kernel Image only; do not flash directly to a partition
+          EOF
+
+          cd "$OUT"
+          sha256sum Image-OPD2413-6.6.118-DroidSpaces-v3 kernel-config > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPD2413-6.6.118-DroidSpaces-v3
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
