@@ -37,7 +37,7 @@ jobs:
           chmod +x /tmp/repo
           sudo mv /tmp/repo /usr/local/bin/repo
 
-      - name: Sync exact OnePlus Pad 2 Pro Android 16 source
+      - name: Sync OnePlus Pad 2 Pro Android 16 source
         run: |
           set -euxo pipefail
           mkdir -p "$GITHUB_WORKSPACE/kernel"
@@ -52,7 +52,7 @@ jobs:
           test "$(awk '/^PATCHLEVEL =/{print $3}' kernel_platform/common/Makefile)" = "6"
           test "$(awk '/^SUBLEVEL =/{print $3}' kernel_platform/common/Makefile)" = "118"
 
-      - name: Apply upstream DroidSpaces GKI module
+      - name: Apply DroidSpaces GKI integration
         run: |
           set -euxo pipefail
           git clone --depth=1 https://github.com/xingguangcuican6666/DroidSpaces-OSS-module.git "$GITHUB_WORKSPACE/ds-module"
@@ -62,7 +62,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/ds-module/setup.sh"
           grep -E 'CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NETFILTER_XT_MATCH_ADDRTYPE)=' "$DEFCONFIG"
 
-      - name: Match stock OPD2413 kernel ABI identity
+      - name: Match stock OPD2413 ABI identity
         run: |
           set -euxo pipefail
           DEFCONFIG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/arch/arm64/configs/gki_defconfig"
@@ -70,8 +70,8 @@ jobs:
           set_string() {
             key="$1"
             value="$2"
-            if grep -q "^$key=" "$DEFCONFIG"; then
-              sed -i "s|^$key=.*|$key=\"$value\"|" "$DEFCONFIG"
+            if grep -q "^${key}=" "$DEFCONFIG"; then
+              sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$DEFCONFIG"
             else
               printf '%s="%s"\n' "$key" "$value" >> "$DEFCONFIG"
             fi
@@ -79,10 +79,10 @@ jobs:
 
           set_y() {
             key="$1"
-            if grep -q "^# $key is not set$" "$DEFCONFIG"; then
-              sed -i "s|^# $key is not set$|$key=y|" "$DEFCONFIG"
-            elif grep -q "^$key=" "$DEFCONFIG"; then
-              sed -i "s|^$key=.*|$key=y|" "$DEFCONFIG"
+            if grep -q "^# ${key} is not set$" "$DEFCONFIG"; then
+              sed -i "s|^# ${key} is not set$|${key}=y|" "$DEFCONFIG"
+            elif grep -q "^${key}=" "$DEFCONFIG"; then
+              sed -i "s|^${key}=.*|${key}=y|" "$DEFCONFIG"
             else
               printf '%s=y\n' "$key" >> "$DEFCONFIG"
             fi
@@ -90,25 +90,25 @@ jobs:
 
           set_n() {
             key="$1"
-            if grep -q "^$key=" "$DEFCONFIG"; then
-              sed -i "s|^$key=.*|# $key is not set|" "$DEFCONFIG"
-            elif ! grep -q "^# $key is not set$" "$DEFCONFIG"; then
+            if grep -q "^${key}=" "$DEFCONFIG"; then
+              sed -i "s|^${key}=.*|# ${key} is not set|" "$DEFCONFIG"
+            elif ! grep -q "^# ${key} is not set$" "$DEFCONFIG"; then
               printf '# %s is not set\n' "$key" >> "$DEFCONFIG"
             fi
           }
 
-          # Stock running kernel release from OPD2413_16.0.9.400(CN01):
+          # Uploaded stock boot reports:
           # 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
-          # Matching UTS_RELEASE is important for vendor module vermagic.
+          # Keep vendor-module vermagic compatible with the running firmware.
           set_string CONFIG_LOCALVERSION "-android15-8-g2e6b9c3812c5-ab15114928-4k"
           set_n CONFIG_LOCALVERSION_AUTO
 
-          # Keep scheduler-related options aligned with the user's stock embedded config.
+          # Align non-DroidSpaces scheduler settings with the uploaded stock kernel config.
           set_n CONFIG_SLIM_SCHED
           set_n CONFIG_SCHED_CLASS_EXT
           set_n CONFIG_EXT_GROUP_SCHED
 
-          # Keep stock symbol trimming/KMI whitelist behavior.
+          # Align stock KMI symbol trimming behavior.
           set_y CONFIG_TRIM_UNUSED_KSYMS
           set_string CONFIG_UNUSED_KSYMS_WHITELIST "abi_symbollist.raw"
 
@@ -122,210 +122,78 @@ jobs:
           set -euxo pipefail
           cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
           TOOLCHAIN="$GITHUB_WORKSPACE/kernel/kernel_platform/prebuilts/clang/host/linux-x86"
-          echo "Compiler candidates under: $TOOLCHAIN"
-          find "$TOOLCHAIN" -maxdepth 4 -name clang -path '*/bin/clang' -print || true
           CLANG_BIN="$(find "$TOOLCHAIN" -maxdepth 4 -name clang -path '*/bin/clang' | head -n1)"
           test -n "$CLANG_BIN"
           test -x "$CLANG_BIN"
           export PATH="$(dirname "$CLANG_BIN"):$PATH"
           clang --version
           ccache -M 4G || true
+
           rm -rf out
-          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= CC="ccache clang" HOSTCC="ccache clang" gki_defconfig
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= \
+            CC="ccache clang" HOSTCC="ccache clang" gki_defconfig
+
           KREL="$(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= kernelrelease)"
           echo "kernelrelease=$KREL"
           test "$KREL" = "6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k"
-          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= CC="ccache clang" HOSTCC="ccache clang" Image
+
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 LOCALVERSION= \
+            CC="ccache clang" HOSTCC="ccache clang" Image
+
           test -s out/arch/arm64/boot/Image
           strings out/arch/arm64/boot/Image | grep -m1 '^Linux version 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k '
           file out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image
 
-      - name: Verify DroidSpaces configuration
+      - name: Verify final configuration
         run: |
           set -euxo pipefail
           CONFIG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config"
+
           for opt in \
             CONFIG_NAMESPACES CONFIG_PID_NS CONFIG_IPC_NS CONFIG_UTS_NS \
             CONFIG_NET_NS CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_DEVTMPFS; do
             grep -q "^${opt}=y$" "$CONFIG" || { echo "MISSING: ${opt}=y"; exit 1; }
           done
-          grep -E '^CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|NET_NS|SYSVIPC|POSIX_MQUEUE|DEVTMPFS)=y
+
+          grep -q '^CONFIG_LOCALVERSION="-android15-8-g2e6b9c3812c5-ab15114928-4k"$' "$CONFIG"
+          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' "$CONFIG"
+          grep -q '^# CONFIG_SLIM_SCHED is not set$' "$CONFIG" || true
+          grep -q '^# CONFIG_SCHED_CLASS_EXT is not set$' "$CONFIG" || true
+          grep -q '^# CONFIG_EXT_GROUP_SCHED is not set$' "$CONFIG" || true
+          grep -q '^CONFIG_TRIM_UNUSED_KSYMS=y$' "$CONFIG"
+          grep -q '^CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"$' "$CONFIG"
+
+          grep -E '^CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|NET_NS|SYSVIPC|POSIX_MQUEUE|DEVTMPFS)=y$' "$CONFIG"
 
       - name: Prepare artifacts
         run: |
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/artifacts"
           mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
+          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces-v2"
           cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
+
           cat > "$OUT/BUILD-INFO.txt" <<'EOF'
           Device: OnePlus Pad 2 Pro (OPD2413)
           Firmware target: OPD2413_16.0.9.400(CN01)
           Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
           Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Expected kernel base: 6.6.118
-          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-          UTS_RELEASE target: 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k (matches uploaded stock boot)
-          Root: no KernelSU added; this artifact is a raw kernel Image only
-          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
+          Kernel base: 6.6.118
+          UTS_RELEASE target: 6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k
+          DroidSpaces: required namespace/SYSVIPC/devtmpfs support with kABI-safe integration
+          Root solution: none added; intended to preserve the existing Magisk init_boot
+          Safety: raw kernel Image only; do not flash directly to a partition
           EOF
+
           cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
+          sha256sum Image-OPD2413-6.6.118-DroidSpaces-v2 kernel-config > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OPD2413-6.6.118-DroidSpaces
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-          grep -q '^CONFIG_LOCALVERSION="-android15-8-g2e6b9c3812c5-ab15114928-4k"
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Expected kernel base: 6.6.118
-          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-          Root: no KernelSU added; this artifact is a raw kernel Image only
-          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
-          EOF
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Expected kernel base: 6.6.118
-          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-          Root: no KernelSU added; this artifact is a raw kernel Image only
-          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
-          EOF
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-          grep -q '^CONFIG_TRIM_UNUSED_KSYMS=y
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Expected kernel base: 6.6.118
-          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-          Root: no KernelSU added; this artifact is a raw kernel Image only
-          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
-          EOF
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-          grep -q '^CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Expected kernel base: 6.6.118
-          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-          Root: no KernelSU added; this artifact is a raw kernel Image only
-          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
-          EOF
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
- "$CONFIG"
-
-      - name: Prepare artifacts
-        run: |
-          set -euxo pipefail
-          OUT="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$OUT"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
-          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
-          cat > "$OUT/BUILD-INFO.txt" <<'EOF'
-          Device: OnePlus Pad 2 Pro (OPD2413)
-          Firmware target: OPD2413_16.0.9.400(CN01)
-          Source manifest: OnePlusOSS/kernel_manifest @ oneplus/sm8750, oneplus_pad_2_pro_b.xml
-          Kernel source branch: oneplus/sm8750_b_16.0.0_pad_2_pro
-          Expected kernel base: 6.6.118
-          DroidSpaces integration: upstream ABK module + required GKI kABI-safe patch/config
-          Root: no KernelSU added; this artifact is a raw kernel Image only
-          Safety: DO NOT flash the raw Image directly to a partition. Repack it into your exact stock boot image or a verified device-specific AnyKernel package first.
-          EOF
-          cd "$OUT"
-          sha256sum Image-OPD2413-6.6.118-DroidSpaces kernel-config > SHA256SUMS.txt
-
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OPD2413-6.6.118-DroidSpaces
+          name: OPD2413-6.6.118-DroidSpaces-v2
           path: artifacts/
           if-no-files-found: error
           retention-days: 7
