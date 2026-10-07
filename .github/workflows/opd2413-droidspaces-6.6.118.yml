@@ -1,0 +1,171 @@
+name: Build OPD2413 DroidSpaces 6.6.118
+
+on:
+  push:
+    branches:
+      - kernel-opd2413-ds-6.6.118
+    paths:
+      - ".github/workflows/opd2413-droidspaces-6.6.118.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout control repo
+        uses: actions/checkout@v4
+
+      - name: Free runner disk
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean
+          df -h
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git libelf-dev libssl-dev \
+            python3 rsync unzip zip dwarves ca-certificates xz-utils
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /tmp/repo
+          chmod +x /tmp/repo
+          sudo mv /tmp/repo /usr/local/bin/repo
+
+      - name: Sync exact OnePlus Pad 2 Pro Android 16 source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/kernel"
+          cd "$GITHUB_WORKSPACE/kernel"
+          repo init --depth=1 \
+            -u https://github.com/OnePlusOSS/kernel_manifest.git \
+            -b oneplus/sm8750 \
+            -m oneplus_pad_2_pro_b.xml
+          repo sync -c --no-tags --no-clone-bundle -j"$(nproc)"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) = ' kernel_platform/common/Makefile
+          test "$(awk '/^VERSION =/{print $3}' kernel_platform/common/Makefile)" = "6"
+          test "$(awk '/^PATCHLEVEL =/{print $3}' kernel_platform/common/Makefile)" = "6"
+          test "$(awk '/^SUBLEVEL =/{print $3}' kernel_platform/common/Makefile)" = "118"
+
+      - name: Apply DroidSpaces 6.6 kABI patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 https://github.com/ravindu644/Droidspaces-OSS.git "$GITHUB_WORKSPACE/Droidspaces-OSS"
+          PATCH="$(find "$GITHUB_WORKSPACE/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI/below-kernel-6.12" \
+            -maxdepth 1 -type f -name '*fix_sysvipc*kABI*6_7_8*.patch' | head -n1)"
+          test -n "$PATCH"
+          cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
+          patch -p1 < "$PATCH"
+
+      - name: Add SM8750 HMBIRD compatibility shim
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
+          curl -fL \
+            https://raw.githubusercontent.com/showdo/build_oneplus_sm8750/main/hmbird_patch.c \
+            -o drivers/hmbird_patch.c
+          grep -q 'MODULE_DESCRIPTION' drivers/hmbird_patch.c
+          grep -q 'hmbird_patch.o' drivers/Makefile || echo 'obj-y += hmbird_patch.o' >> drivers/Makefile
+          sha256sum drivers/hmbird_patch.c
+
+      - name: Enable minimal DroidSpaces GKI configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CFG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          set_cfg() {
+            key="$1"
+            if grep -q "^# ${key} is not set$" "$CFG"; then
+              sed -i "s/^# ${key} is not set$/${key}=y/" "$CFG"
+            elif grep -q "^${key}=" "$CFG"; then
+              sed -i "s/^${key}=.*/${key}=y/" "$CFG"
+            else
+              printf '%s=y\n' "$key" >> "$CFG"
+            fi
+          }
+          set_cfg CONFIG_SYSVIPC
+          set_cfg CONFIG_POSIX_MQUEUE
+          set_cfg CONFIG_IPC_NS
+          set_cfg CONFIG_PID_NS
+          set_cfg CONFIG_DEVTMPFS
+          set_cfg CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+          grep -E 'CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NETFILTER_XT_MATCH_ADDRTYPE)=' "$CFG"
+
+      - name: Build kernel Image
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_MAXSIZE: 4G
+        run: |
+          set -euxo pipefail
+          export PATH="$GITHUB_WORKSPACE/kernel/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"
+          ccache -M 4G || true
+          cd "$GITHUB_WORKSPACE/kernel/kernel_platform/common"
+          rm -rf out
+          make -j"$(nproc)" \
+            O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" HOSTCC="ccache clang" \
+            gki_defconfig
+          make -j"$(nproc)" \
+            O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" HOSTCC="ccache clang" \
+            Image
+          test -s out/arch/arm64/boot/Image
+          file out/arch/arm64/boot/Image
+          sha256sum out/arch/arm64/boot/Image
+
+      - name: Verify required kernel options
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CONFIG="$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config"
+          for opt in \
+            CONFIG_NAMESPACES CONFIG_PID_NS CONFIG_IPC_NS CONFIG_UTS_NS \
+            CONFIG_NET_NS CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_DEVTMPFS; do
+            grep -q "^${opt}=y$" "$CONFIG" || { echo "MISSING: ${opt}=y"; exit 1; }
+          done
+          grep -E '^CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|NET_NS|SYSVIPC|POSIX_MQUEUE|DEVTMPFS)=y$' "$CONFIG"
+
+      - name: Package AnyKernel3 and metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$OUT"
+          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$OUT/Image-OPD2413-6.6.118-DroidSpaces"
+          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/.config" "$OUT/kernel-config"
+          git clone --depth=1 https://github.com/showdo/AnyKernel3.git "$GITHUB_WORKSPACE/AnyKernel3"
+          rm -rf "$GITHUB_WORKSPACE/AnyKernel3/.git"
+          cp "$GITHUB_WORKSPACE/kernel/kernel_platform/common/out/arch/arm64/boot/Image" "$GITHUB_WORKSPACE/AnyKernel3/Image"
+          cat > "$GITHUB_WORKSPACE/AnyKernel3/BUILD-INFO.txt" <<'EOF'
+Device: OnePlus Pad 2 Pro (OPD2413)
+Target firmware: OPD2413_16.0.9.400(CN01)
+Kernel base: OnePlusOSS oneplus/sm8750_b_16.0.0_pad_2_pro
+Expected base version: 6.6.118
+Added: DroidSpaces GKI kABI-safe SYSVIPC patch
+Enabled: SYSVIPC, POSIX_MQUEUE, IPC_NS, PID_NS, DEVTMPFS, NETFILTER_XT_MATCH_ADDRTYPE
+Root solution: none added by this build (intended to preserve existing Magisk in boot ramdisk)
+IMPORTANT: test/flash at your own risk; keep a stock boot backup.
+EOF
+          cd "$GITHUB_WORKSPACE/AnyKernel3"
+          zip -r9 "$OUT/AnyKernel3-OPD2413-6.6.118-DroidSpaces.zip" . -x '.git/*'
+          cd "$OUT"
+          sha256sum Image-OPD2413-6.6.118-DroidSpaces AnyKernel3-OPD2413-6.6.118-DroidSpaces.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPD2413-6.6.118-DroidSpaces
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
